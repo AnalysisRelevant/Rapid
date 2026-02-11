@@ -397,13 +397,9 @@ export class RapidSystem extends AbstractSystem {
 
     const enabledIDs = [];
     for (const [datasetID, dataset] of this.catalog) {
-      // This code is a bit weird - I don't like it and we should change it...
-      // I'm trying to match the legacy color-choosing behavior from before Rapid#1642 (which changed a bunch of things)
-      // - If adding fbRoads, choose "Rapid magenta".
-      // - If adding an Overture dataset, choose "Overture cyan".
-      // - If adding an Esri dataset, choose a color based on how many datasets were added already.
       const wasAdded = dataset.added;
       const nowAdded = this._addedDatasetIDs.has(datasetID);
+      // Ensure that the familiar RAPID_MAGENTA color is used for the ML buildings
       if (!wasAdded && nowAdded && dataset.color === RAPID_MAGENTA) {  // being added right now with the default color
         if (dataset.categories.has('meta') || dataset.categories.has('microsoft') || dataset.categories.has('google')) {
           dataset.color = RAPID_MAGENTA;

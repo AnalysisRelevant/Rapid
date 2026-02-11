@@ -521,6 +521,13 @@ export class UiRapidDatasetToggle {
       .attr('class', 'rapid-ignored-instructions')
       .html(l10n.t('rapid_menu.ignored_ids.instructions'));
 
+    $content
+      .append('a')
+      .attr('href', 'https://github.com/OvertureMaps/data/issues')
+      .attr('target', '_blank')
+      .attr('rel', 'noopener noreferrer')
+      .text('github.com/OvertureMaps/data');
+
     const previewText = ids.length <= 20
       ? idsText
       : ids.slice(0, 20).join('\n') + '\n' + l10n.t('rapid_menu.ignored_ids.more', { count: ids.length - 20 });

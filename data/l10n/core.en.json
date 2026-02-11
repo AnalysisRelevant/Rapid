@@ -1470,10 +1470,10 @@
         "link_one": "{count} ignored Overture ID",
         "title": "{count} Ignored Overture IDs",
         "title_one": "{count} Ignored Overture ID",
-        "instructions": "These are the Overture GERS IDs of ML-derived building footprints you rejected / ignored this session. You can report them as false positives by opening an issue at <a href=\"https://github.com/OvertureMaps/data/issues/new\" target=\"_blank\" rel=\"noopener noreferrer\">github.com/OvertureMaps/data</a>.",
+        "instructions": "These are the Overture GERS IDs of ML-derived building footprints you rejected / ignored this session. You can report them as false positives by opening an issue:",
         "copy": "Copy to Clipboard",
         "copied": "Copied!",
-        "download": "Download as File",
+        "download": "Download as file",
         "more": "… and {count} more"
       }
     },
