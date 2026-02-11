@@ -138,8 +138,37 @@ export class OvertureService extends AbstractSystem {
   startAsync() {
     this._started = true;
 
+    // When new OSM data is merged into the editor (e.g. after a changeset upload
+    // and fresh tile fetch), invalidate the conflation caches so that newly added
+    // OSM buildings will be detected on the next render pass.
+    const editor = this.context.systems.editor;
+    editor.on('merge', () => this._invalidateConflationCaches());
+
     const vtService = this.context.services.vectortile;
     return vtService.startAsync();
+  }
+
+
+  /**
+   * _invalidateConflationCaches
+   * Clear the "seen" sets so that all Overture buildings get re-conflated
+   * against the latest OSM graph on the next render pass.
+   * We keep the internal graph and tree intact — only the `seen` flags need
+   * resetting so features are re-evaluated for overlap.
+   */
+  _invalidateConflationCaches() {
+    if (this._esriBuildingsCache) {
+      this._esriBuildingsCache.seen.clear();
+    }
+    if (this._mlBuildingsCache) {
+      this._mlBuildingsCache.seen.clear();
+    }
+
+    // Also clear the internal graphs/trees so stale entities don't persist
+    this._esriBuildingsGraph = null;
+    this._esriBuildingsTree = null;
+    this._mlBuildingsGraph = null;
+    this._mlBuildingsTree = null;
   }
 
 
@@ -504,19 +533,19 @@ export class OvertureService extends AbstractSystem {
     } else if (geometrySource === 'Google Open Buildings') {
       tags.source = 'google/OpenBuildings';
     } else if (geometrySource === 'Esri Community Maps') {
-      tags.source = 'esri/communityMaps';
+      tags.source = 'esri/CommunityMaps';
     }
 
-    // Add height attributes if present in Overture data
-    const props = geojson.properties || {};
-    if (props.height !== undefined && props.height !== null) {
-      // Round to nearest 0.5
-      const roundedHeight = Math.round(props.height * 2) / 2;
-      tags.height = String(roundedHeight);
-    }
-    if (props.num_floors !== undefined && props.num_floors !== null) {
-      tags['building:levels'] = String(props.num_floors);
-    }
+    // // Add height attributes if present in Overture data
+    // const props = geojson.properties || {};
+    // if (props.height !== undefined && props.height !== null) {
+    //   // Round to nearest 0.5
+    //   const roundedHeight = Math.round(props.height * 2) / 2;
+    //   tags.height = String(roundedHeight);
+    // }
+    // if (props.num_floors !== undefined && props.num_floors !== null) {
+    //   tags['building:levels'] = String(props.num_floors);
+    // }
 
     // Create the way with appropriate tags
     const wayID = osmEntity.id('way');
@@ -530,7 +559,7 @@ export class OvertureService extends AbstractSystem {
     way.__fbid__ = `${datasetID}-${featureID}`;
     way.__service__ = 'overture';
     way.__datasetid__ = datasetID;
-    way.__gersid__ = props.id || null;  // Store the GERS ID from Overture properties
+    way.__gersid__ = (geojson.properties || {}).id || null;  // Store the GERS ID from Overture properties
 
     entities.push(way);
 
