@@ -131,10 +131,6 @@ describe('OvertureService', () => {
 
 
   describe('#_getTransportationSource', () => {
-    it('returns source from @geometry_source property', () => {
-      expect(overture._getTransportationSource({ '@geometry_source': 'TomTom' })).to.eql('TomTom');
-    });
-
     it('returns source from sources array with dataset field', () => {
       expect(overture._getTransportationSource({
         sources: [{ dataset: 'TomTom', license: 'ODbL-1.0' }]
@@ -158,13 +154,6 @@ describe('OvertureService', () => {
 
     it('returns null for malformed JSON string', () => {
       expect(overture._getTransportationSource({ sources: 'not-json' })).to.be.null;
-    });
-
-    it('prefers @geometry_source over sources array', () => {
-      expect(overture._getTransportationSource({
-        '@geometry_source': 'Google',
-        sources: [{ dataset: 'TomTom' }]
-      })).to.eql('Google');
     });
   });
 
@@ -285,60 +274,33 @@ describe('OvertureService', () => {
   });
 
 
-  describe('#_distMeters', () => {
-    it('returns 0 for same point', () => {
-      expect(overture._distMeters([0, 0], [0, 0])).to.eql(0);
+  describe('#_isConflatedWithOSM', () => {
+    it('returns false for null/short coords', () => {
+      expect(overture._isConflatedWithOSM(null, [])).to.be.false;
+      expect(overture._isConflatedWithOSM([[0, 0]], [])).to.be.false;
     });
 
-    it('returns approximately correct distance for 1 degree latitude', () => {
-      // 1 degree of latitude ≈ 111,320 meters
-      const dist = overture._distMeters([0, 0], [0, 1]);
-      expect(dist).to.be.greaterThan(110000);
-      expect(dist).to.be.lessThan(112000);
+    it('returns false when no highways to compare against', () => {
+      const coords = [[10, 10], [10.001, 10]];
+      expect(overture._isConflatedWithOSM(coords, [])).to.be.false;
     });
 
-    it('accounts for longitude compression at higher latitudes', () => {
-      // At 60°N, 1 degree longitude ≈ half of what it is at equator
-      const distEquator = overture._distMeters([0, 0], [1, 0]);
-      const dist60 = overture._distMeters([0, 60], [1, 60]);
-      expect(dist60).to.be.lessThan(distEquator * 0.6);
-      expect(dist60).to.be.greaterThan(distEquator * 0.4);
-    });
-  });
-
-
-  describe('#_pointToSegmentDistance', () => {
-    it('returns 0 for point on segment', () => {
-      const dist = overture._pointToSegmentDistance([0.5, 0], [0, 0], [1, 0]);
-      expect(dist).to.be.lessThan(1); // should be ~0
+    it('returns true when line overlaps an OSM highway', () => {
+      const lineCoords = [[10, 10], [10.001, 10]];
+      const highway = {
+        coords: [[10, 10], [10.001, 10]],
+        bbox: { minX: 9.999, minY: 9.999, maxX: 10.002, maxY: 10.001 }
+      };
+      expect(overture._isConflatedWithOSM(lineCoords, [highway])).to.be.true;
     });
 
-    it('returns distance to nearest endpoint when projection falls outside', () => {
-      // Point is beyond the end of the segment
-      const dist = overture._pointToSegmentDistance([2, 0], [0, 0], [1, 0]);
-      const endpointDist = overture._distMeters([2, 0], [1, 0]);
-      expect(Math.abs(dist - endpointDist)).to.be.lessThan(1);
-    });
-
-    it('returns perpendicular distance for projection within segment', () => {
-      // Point above midpoint of horizontal segment
-      const dist = overture._pointToSegmentDistance([0.5, 0.001], [0, 0], [1, 0]);
-      // Should be approximately the N-S distance of 0.001 degrees ≈ 111m
-      expect(dist).to.be.greaterThan(100);
-      expect(dist).to.be.lessThan(120);
-    });
-  });
-
-
-  describe('#_pointToLineDistance', () => {
-    it('returns minimum distance across all segments', () => {
-      // L-shaped polyline
-      const line = [[0, 0], [1, 0], [1, 1]];
-      // Point near the second segment
-      const dist = overture._pointToLineDistance([1.001, 0.5], line);
-      // Should be close to 0.001 degrees ≈ 111m longitude at equator, but ~55m at lat 0.5
-      expect(dist).to.be.greaterThan(50);
-      expect(dist).to.be.lessThan(150);
+    it('returns false when line is far from OSM highways', () => {
+      const lineCoords = [[20, 20], [20.001, 20]];
+      const highway = {
+        coords: [[10, 10], [10.001, 10]],
+        bbox: { minX: 9.999, minY: 9.999, maxX: 10.002, maxY: 10.001 }
+      };
+      expect(overture._isConflatedWithOSM(lineCoords, [highway])).to.be.false;
     });
   });
 
@@ -409,7 +371,7 @@ describe('OvertureService', () => {
         geojson: {
           id: 'f1',
           geometry: { type: 'LineString', coordinates: [[0, 0], [1, 0]] },
-          properties: { '@geometry_source': 'OpenStreetMap', class: 'residential' }
+          properties: { sources: [{ dataset: 'OpenStreetMap' }], class: 'residential' }
         }
       }];
 
@@ -426,7 +388,7 @@ describe('OvertureService', () => {
         geojson: {
           id: 'f1',
           geometry: { type: 'LineString', coordinates: [[0, 0], [1, 0]] },
-          properties: { '@geometry_source': 'SomeOther', class: 'residential' }
+          properties: { sources: [{ dataset: 'SomeOther' }], class: 'residential' }
         }
       }];
 
@@ -477,7 +439,7 @@ describe('OvertureService', () => {
         geojson: {
           id: 'f1',
           geometry: { type: 'Point', coordinates: [0, 0] },
-          properties: { '@geometry_source': 'TomTom', class: 'residential' }
+          properties: { sources: [{ dataset: 'TomTom' }], class: 'residential' }
         }
       }];
 

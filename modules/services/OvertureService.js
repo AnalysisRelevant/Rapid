@@ -1,4 +1,5 @@
 import * as Polyclip from 'polyclip-ts';
+import { geoSphericalClosestPoint, geoSphericalDistance } from '@rapid-sdk/math';
 
 import { AbstractSystem } from '../core/AbstractSystem.js';
 import { Graph, Tree, RapidDataset } from '../core/lib/index.js';
@@ -59,6 +60,31 @@ const NON_MOTORIZED_CLASSES = new Set([
 
 // Highway classes eligible for _link suffix
 const LINK_HIGHWAY_TYPES = new Set(['motorway', 'trunk', 'primary', 'secondary', 'tertiary']);
+
+// STAC themes to fetch PMTiles URLs for
+const WANTED_THEMES = new Set(['buildings', 'places', 'transportation']);
+
+// Maximum features to process per render frame (prevents main thread blocking)
+const MAX_FEATURES_PER_FRAME = 500;
+
+// Bbox padding in degrees for proximity matching (~30m, enlarged to account for longitude compression at high latitudes)
+const BBOX_PAD_DEG = 0.0003;
+
+// Conflation parameters for transportation
+const CONFLATION_THRESHOLD_METERS = 10;   // distance within which a sample point is "near" an OSM highway
+const CONFLATION_REJECT_RATIO = 0.2;      // fraction of near sample points to reject a feature
+const CONFLATION_MAX_SAMPLES = 20;        // maximum sample points along a LineString
+const CONFLATION_MIN_SPACING_METERS = 5;  // minimum spacing between sample points
+
+// Map Overture road_surface values to OSM surface= tag values
+const SURFACE_MAP = {
+  'paved': 'paved',
+  'unpaved': 'unpaved',
+  'gravel': 'gravel',
+  'dirt': 'dirt',
+  'paving_stones': 'paving_stones',
+  'metal': 'metal'
+};
 
 
 /**
@@ -123,8 +149,7 @@ export class OvertureService extends AbstractSystem {
       const releaseData = await fetch(releaseUrl).then(utilFetchResponse);
       this._releaseId = releaseData.id ?? '';
 
-      // 3. Fetch only the themes we need (buildings, places)
-      const WANTED_THEMES = new Set(['buildings', 'places', 'transportation']);
+      // 3. Fetch only the themes we need
       const themeLinks = (releaseData.links ?? []).filter(l => l.rel === 'child' && WANTED_THEMES.has(l.title));
       const themeFetches = themeLinks.map(async link => {
         const themeUrl = new URL(link.href, releaseUrl).href;
@@ -463,7 +488,6 @@ export class OvertureService extends AbstractSystem {
     const newEntities = [];
 
     // Limit processing to avoid blocking the main thread
-    const MAX_FEATURES_PER_FRAME = 500;
     let processedCount = 0;
 
     for (const feature of geojsonFeatures) {
@@ -660,52 +684,12 @@ export class OvertureService extends AbstractSystem {
     const roadsCache = this._tomtomRoadsCache;
 
     const context = this.context;
-    const editor = context.systems.editor;
-    const osmGraph = editor.staging.graph;
     const viewport = context.viewport;
     const extent = viewport.visibleExtent();
 
-    // Get all OSM highway ways in the visible extent
-    const osmEntities = editor.intersects(extent);
-    const motorizedHighways = [];
-    const nonMotorizedHighways = [];
-
-    for (const entity of osmEntities) {
-      if (entity.type !== 'way' || !entity.tags.highway) continue;
-      const hw = entity.tags.highway;
-      try {
-        const nodes = entity.nodes.map(nodeID => osmGraph.entity(nodeID));
-        const coords = nodes.map(n => n.loc);
-        if (coords.length < 2) continue;
-
-        // Compute bbox for fast pre-filtering
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        for (const c of coords) {
-          if (c[0] < minX) minX = c[0];
-          if (c[0] > maxX) maxX = c[0];
-          if (c[1] < minY) minY = c[1];
-          if (c[1] > maxY) maxY = c[1];
-        }
-        // Expand bbox by ~30m in degrees for proximity matching
-        // Using 0.0003 instead of 0.00015 to account for longitude compression at high latitudes
-        const PAD = 0.0003;
-        const data = {
-          coords,
-          bbox: { minX: minX - PAD, minY: minY - PAD, maxX: maxX + PAD, maxY: maxY + PAD }
-        };
-
-        if (MOTORIZED_HIGHWAYS.has(hw)) {
-          motorizedHighways.push(data);
-        } else if (NON_MOTORIZED_HIGHWAYS.has(hw)) {
-          nonMotorizedHighways.push(data);
-        }
-      } catch (e) {
-        continue;
-      }
-    }
+    const { motorized, nonMotorized } = this._getOSMHighwaysByMode(extent);
 
     const newEntities = [];
-    const MAX_FEATURES_PER_FRAME = 500;
     let processedCount = 0;
 
     for (const feature of geojsonFeatures) {
@@ -738,39 +722,13 @@ export class OvertureService extends AbstractSystem {
       // Determine travel mode from Overture class
       const overtureClass = geojson.properties?.class || '';
       const isNonMotorized = NON_MOTORIZED_CLASSES.has(overtureClass);
-      const sameModHighways = isNonMotorized ? nonMotorizedHighways : motorizedHighways;
+      const sameModHighways = isNonMotorized ? nonMotorized : motorized;
 
-      // Point-sample each linestring and check proximity to same-mode OSM highways
+      // Check if any linestring in this feature is conflated with existing OSM
       let rejected = false;
       for (const coords of lineStrings) {
         if (rejected) break;
-        if (!coords || coords.length < 2) continue;
-
-        // Generate sample points along the line
-        const samplePoints = this._sampleLinePoints(coords, 20, 5);
-        if (!samplePoints.length) continue;
-
-        // Count how many sample points are within 10m of a same-mode OSM highway
-        let nearCount = 0;
-        const THRESHOLD_METERS = 10;
-
-        for (const pt of samplePoints) {
-          let minDist = Infinity;
-          for (const highway of sameModHighways) {
-            // Bbox pre-filter
-            if (pt[0] < highway.bbox.minX || pt[0] > highway.bbox.maxX ||
-                pt[1] < highway.bbox.minY || pt[1] > highway.bbox.maxY) {
-              continue;
-            }
-            const dist = this._pointToLineDistance(pt, highway.coords);
-            if (dist < minDist) minDist = dist;
-            if (minDist < THRESHOLD_METERS) break;  // early exit
-          }
-          if (minDist < THRESHOLD_METERS) nearCount++;
-        }
-
-        // If >20% of sample points are near an OSM highway, reject
-        if (nearCount / samplePoints.length > 0.2) {
+        if (this._isConflatedWithOSM(coords, sameModHighways)) {
           rejected = true;
         }
       }
@@ -800,6 +758,94 @@ export class OvertureService extends AbstractSystem {
 
 
   /**
+   * _getOSMHighwaysByMode
+   * Collect existing OSM highway ways in the given extent, categorized by travel mode.
+   * Each highway entry includes its coordinates and a padded bounding box for fast filtering.
+   *
+   * @param   {Object}  extent - Visible extent from the viewport
+   * @return  {Object}  `{ motorized, nonMotorized }` arrays of `{ coords, bbox }` objects
+   */
+  _getOSMHighwaysByMode(extent) {
+    const editor = this.context.systems.editor;
+    const osmGraph = editor.staging.graph;
+    const osmEntities = editor.intersects(extent);
+    const motorized = [];
+    const nonMotorized = [];
+
+    for (const entity of osmEntities) {
+      if (entity.type !== 'way' || !entity.tags.highway) continue;
+      const hw = entity.tags.highway;
+      try {
+        const nodes = entity.nodes.map(nodeID => osmGraph.entity(nodeID));
+        const coords = nodes.map(n => n.loc);
+        if (coords.length < 2) continue;
+
+        // Compute bbox for fast pre-filtering
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const c of coords) {
+          if (c[0] < minX) minX = c[0];
+          if (c[0] > maxX) maxX = c[0];
+          if (c[1] < minY) minY = c[1];
+          if (c[1] > maxY) maxY = c[1];
+        }
+        const data = {
+          coords,
+          bbox: { minX: minX - BBOX_PAD_DEG, minY: minY - BBOX_PAD_DEG, maxX: maxX + BBOX_PAD_DEG, maxY: maxY + BBOX_PAD_DEG }
+        };
+
+        if (MOTORIZED_HIGHWAYS.has(hw)) {
+          motorized.push(data);
+        } else if (NON_MOTORIZED_HIGHWAYS.has(hw)) {
+          nonMotorized.push(data);
+        }
+      } catch (e) {
+        continue;
+      }
+    }
+
+    return { motorized, nonMotorized };
+  }
+
+
+  /**
+   * _isConflatedWithOSM
+   * Determine whether a LineString is already represented by existing OSM highways.
+   * Uses point-sampling: if >20% of sample points along the line are within 10m of
+   * a same-mode OSM highway, the feature is considered conflated.
+   *
+   * @param   {Array}   coords - Array of [lon, lat] coordinates for the LineString
+   * @param   {Array}   sameModHighways - Array of `{ coords, bbox }` for same-mode OSM highways
+   * @return  {boolean} true if the line is conflated (should be rejected)
+   */
+  _isConflatedWithOSM(coords, sameModHighways) {
+    if (!coords || coords.length < 2) return false;
+
+    const samplePoints = this._sampleLinePoints(coords, CONFLATION_MAX_SAMPLES, CONFLATION_MIN_SPACING_METERS);
+    if (!samplePoints.length) return false;
+
+    let nearCount = 0;
+
+    for (const pt of samplePoints) {
+      let minDist = Infinity;
+      for (const highway of sameModHighways) {
+        // Bbox pre-filter
+        if (pt[0] < highway.bbox.minX || pt[0] > highway.bbox.maxX ||
+            pt[1] < highway.bbox.minY || pt[1] > highway.bbox.maxY) {
+          continue;
+        }
+        const closest = geoSphericalClosestPoint(highway.coords, pt);
+        const dist = closest?.distance ?? Infinity;
+        if (dist < minDist) minDist = dist;
+        if (minDist < CONFLATION_THRESHOLD_METERS) break;  // early exit
+      }
+      if (minDist < CONFLATION_THRESHOLD_METERS) nearCount++;
+    }
+
+    return nearCount / samplePoints.length > CONFLATION_REJECT_RATIO;
+  }
+
+
+  /**
    * _sampleLinePoints
    * Generate sample points along a LineString at regular intervals.
    * @param   {Array}   coords - Array of [lon, lat] coordinates
@@ -813,7 +859,7 @@ export class OvertureService extends AbstractSystem {
     // Compute approximate total length in meters
     let totalLength = 0;
     for (let i = 1; i < coords.length; i++) {
-      totalLength += this._distMeters(coords[i - 1], coords[i]);
+      totalLength += geoSphericalDistance(coords[i - 1], coords[i]);
     }
 
     if (totalLength === 0) return [coords[0]];
@@ -832,7 +878,7 @@ export class OvertureService extends AbstractSystem {
     nextSampleDist = spacing;
 
     for (let i = 1; i < coords.length && samples.length < numSamples; i++) {
-      const segLen = this._distMeters(coords[i - 1], coords[i]);
+      const segLen = geoSphericalDistance(coords[i - 1], coords[i]);
       const prevAccum = accumulated;
       accumulated += segLen;
 
@@ -850,67 +896,6 @@ export class OvertureService extends AbstractSystem {
 
 
   /**
-   * _distMeters
-   * Flat-earth distance approximation between two [lon, lat] points.
-   * Sufficient for distances under ~1km.
-   * @param   {Array}  a - [lon, lat]
-   * @param   {Array}  b - [lon, lat]
-   * @return  {number} Distance in meters
-   */
-  _distMeters(a, b) {
-    const DEG_TO_M = 111320;
-    const dLon = (b[0] - a[0]) * Math.cos((a[1] + b[1]) * Math.PI / 360);
-    const dLat = b[1] - a[1];
-    return Math.sqrt(dLon * dLon + dLat * dLat) * DEG_TO_M;
-  }
-
-
-  /**
-   * _pointToLineDistance
-   * Compute minimum distance in meters from a point to a polyline.
-   * @param   {Array}  pt - [lon, lat]
-   * @param   {Array}  lineCoords - Array of [lon, lat] for the polyline
-   * @return  {number} Minimum distance in meters
-   */
-  _pointToLineDistance(pt, lineCoords) {
-    let minDist = Infinity;
-    for (let i = 0; i < lineCoords.length - 1; i++) {
-      const dist = this._pointToSegmentDistance(pt, lineCoords[i], lineCoords[i + 1]);
-      if (dist < minDist) minDist = dist;
-      if (minDist === 0) return 0;
-    }
-    return minDist;
-  }
-
-
-  /**
-   * _pointToSegmentDistance
-   * Compute distance in meters from a point to a line segment.
-   * @param   {Array}  pt - [lon, lat]
-   * @param   {Array}  a - [lon, lat] segment start
-   * @param   {Array}  b - [lon, lat] segment end
-   * @return  {number} Distance in meters
-   */
-  _pointToSegmentDistance(pt, a, b) {
-    const cosLat = Math.cos((pt[1] + a[1] + b[1]) / 3 * Math.PI / 180);
-    const dx = (b[0] - a[0]) * cosLat;
-    const dy = b[1] - a[1];
-    const lenSq = dx * dx + dy * dy;
-
-    let t = 0;
-    if (lenSq > 0) {
-      const px = (pt[0] - a[0]) * cosLat;
-      const py = pt[1] - a[1];
-      t = Math.max(0, Math.min(1, (px * dx + py * dy) / lenSq));
-    }
-
-    const projLon = a[0] + t * (b[0] - a[0]);
-    const projLat = a[1] + t * (b[1] - a[1]);
-    return this._distMeters(pt, [projLon, projLat]);
-  }
-
-
-  /**
    * _getTransportationSource
    * Extract the primary source dataset name from transportation feature properties.
    * Transportation features use a `sources` array with `dataset` fields,
@@ -921,9 +906,6 @@ export class OvertureService extends AbstractSystem {
    */
   _getTransportationSource(props) {
     if (!props) return null;
-
-    // Try `@geometry_source` first (buildings-style)
-    if (props['@geometry_source']) return props['@geometry_source'];
 
     // Transportation uses `sources` array with `dataset` field
     let sources = props.sources;
@@ -1046,14 +1028,6 @@ export class OvertureService extends AbstractSystem {
 
     // surface= from road_surface
     const roadSurface = props.road_surface || props.surface || [];
-    const SURFACE_MAP = {
-      'paved': 'paved',
-      'unpaved': 'unpaved',
-      'gravel': 'gravel',
-      'dirt': 'dirt',
-      'paving_stones': 'paving_stones',
-      'metal': 'metal'
-    };
     if (Array.isArray(roadSurface) && roadSurface.length > 0) {
       const surfVal = roadSurface[0]?.value || roadSurface[0];
       if (surfVal && SURFACE_MAP[surfVal]) {
