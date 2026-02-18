@@ -1,5 +1,5 @@
 import * as Polyclip from 'polyclip-ts';
-import { geoSphericalClosestPoint, geoSphericalDistance } from '@rapid-sdk/math';
+import { geoSphericalDistance, vecProject } from '@rapid-sdk/math';
 
 import { AbstractSystem } from '../core/AbstractSystem.js';
 import { Graph, Tree, RapidDataset } from '../core/lib/index.js';
@@ -842,8 +842,7 @@ export class OvertureService extends AbstractSystem {
             pt[1] < highway.bbox.minY || pt[1] > highway.bbox.maxY) {
           continue;
         }
-        const closest = geoSphericalClosestPoint(highway.coords, pt);
-        const dist = closest?.distance ?? Infinity;
+        const dist = this._distToPolylineMeters(pt, highway.coords);
         if (dist < minDist) minDist = dist;
         if (minDist < CONFLATION_THRESHOLD_METERS) break;  // early exit
       }
@@ -901,6 +900,25 @@ export class OvertureService extends AbstractSystem {
     }
 
     return samples;
+  }
+
+
+  /**
+   * _distToPolylineMeters
+   * Compute the minimum distance in meters from a point to any segment of a polyline.
+   * Uses vecProject for segment projection, then geoSphericalDistance for the metric.
+   *
+   * @param   {Array}   pt - [lon, lat] point
+   * @param   {Array}   coords - Array of [lon, lat] polyline vertices
+   * @return  {number}  Minimum distance in meters
+   */
+  _distToPolylineMeters(pt, coords) {
+    if (!coords || coords.length === 0) return Infinity;
+    if (coords.length === 1) return geoSphericalDistance(pt, coords[0]);
+
+    const edge = vecProject(pt, coords);
+    if (!edge) return Infinity;
+    return geoSphericalDistance(pt, edge.target);
   }
 
 

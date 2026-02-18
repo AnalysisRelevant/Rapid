@@ -367,7 +367,8 @@ describe('OvertureService', () => {
           visibleExtent: () => ({
             min: [-180, -90],
             max: [180, 90],
-            rectangle: () => [-180, -90, 180, 90]
+            rectangle: () => [-180, -90, 180, 90],
+            bbox: () => ({ minX: -180, minY: -90, maxX: 180, maxY: 90 })
           })
         }
       };
