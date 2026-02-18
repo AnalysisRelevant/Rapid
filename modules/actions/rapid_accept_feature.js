@@ -125,9 +125,10 @@ export function actionRapidAcceptFeature(entityID, extGraph, tree) {
             var bestDist = Infinity;
             var bestResult = null;
 
+            var targetWay;
             for (var i = 0; i < segmentInfos.length; i++) {
                 var segInfo = segmentInfos[i];
-                var targetWay = graph.hasEntity(segInfo.wayId);
+                targetWay = graph.hasEntity(segInfo.wayId);
                 if (!targetWay) continue;
                 if (!targetWay.tags.highway || !osmRoutableHighwayTagValues[targetWay.tags.highway]) continue;
                 if (!canConnect(acceptedWay, targetWay)) continue;
@@ -188,7 +189,7 @@ export function actionRapidAcceptFeature(entityID, extGraph, tree) {
                 node = node.move(bestResult.snapLoc);
                 graph = graph.replace(node);
 
-                var targetWay = graph.entity(bestResult.targetWayId);
+                targetWay = graph.entity(bestResult.targetWayId);
                 var nidList = targetWay.nodes;
                 var nAid = bestResult.edge[0];
                 var nBid = bestResult.edge[1];
@@ -275,13 +276,14 @@ export function actionRapidAcceptFeature(entityID, extGraph, tree) {
             // Auto-connect endpoints that had no conn/dupe tags
             if (tree && !way.isClosed()) {
                 var connectedHighwayTag = null;
+                var tag;
                 if (!firstNodeHadConn) {
-                    var tag = autoConnectEndpoint(graph.entity(way.nodes[0]), graph.entity(way.id));
+                    tag = autoConnectEndpoint(graph.entity(way.nodes[0]), graph.entity(way.id));
                     if (tag) connectedHighwayTag = tag;
                     way = graph.entity(way.id);  // re-fetch after potential modification
                 }
                 if (!lastNodeHadConn) {
-                    var tag = autoConnectEndpoint(graph.entity(way.nodes[way.nodes.length - 1]), graph.entity(way.id));
+                    tag = autoConnectEndpoint(graph.entity(way.nodes[way.nodes.length - 1]), graph.entity(way.id));
                     if (tag) connectedHighwayTag = tag;
                     way = graph.entity(way.id);  // re-fetch after potential modification
                 }
