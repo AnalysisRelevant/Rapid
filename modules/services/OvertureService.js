@@ -738,7 +738,7 @@ export class OvertureService extends AbstractSystem {
       // Convert surviving features to OSM entities
       for (let j = 0; j < lineStrings.length; j++) {
         const partID = lineStrings.length > 1 ? `${featureID}-p${j}` : featureID;
-        const entities = this._geojsonToOSMLine(lineStrings[j], geojson.properties, partID, datasetID, geometrySource);
+        const entities = this._geojsonToOSMLine(lineStrings[j], geojson.properties, partID, datasetID);
         if (entities) {
           newEntities.push(...entities);
         }
@@ -958,10 +958,9 @@ export class OvertureService extends AbstractSystem {
    * @param   {Object}  properties - GeoJSON feature properties
    * @param   {string}  featureID - Unique identifier for this feature
    * @param   {string}  datasetID - The dataset this feature belongs to
-   * @param   {string}  geometrySource - The @geometry_source value
    * @return  {Array}   Array of [osmNodes..., osmWay], or null if invalid
    */
-  _geojsonToOSMLine(coords, properties, featureID, datasetID, geometrySource) {
+  _geojsonToOSMLine(coords, properties, featureID, datasetID) {
     if (!coords || coords.length < 2) return null;
 
     const entities = [];
